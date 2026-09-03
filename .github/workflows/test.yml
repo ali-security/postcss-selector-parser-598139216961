@@ -1,10 +1,11 @@
 name: test
 on:
-  push:
-    branches:
-    - 'main'
-    - 'master'
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional ava test file/pattern to run instead of the full suite'
+        required: false
+        default: ''
 
 defaults:
   run:
@@ -13,6 +14,7 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -26,8 +28,37 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: pin registry to release date
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2024-08-12
+
       - name: npm ci
         run: npm ci --ignore-scripts
 
       - name: test
-        run: npm test
+        env:
+          # Node >=20.19 unflagged ESM syntax detection, which reparses the
+          # ESM-authored src/*.js as real ES modules and so bypasses the
+          # @babel/register require hook the suite relies on; the strict ESM
+          # resolver then rejects their extensionless relative imports.
+          # Node 20.16 (current when 6.1.2 shipped) had it off by default.
+          # Node 14/16 do not recognise the flag, so scope it to the 20 leg.
+          NODE_OPTIONS: ${{ matrix.node == 20 && '--no-experimental-detect-module' || '' }}
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npx ava ${{ inputs.test-filter }}
+          else
+            npm test
+          fi
+
+      - name: pack
+        if: matrix.node == 18
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == 18
+        with:
+          name: npm-tarball
+          path: '*.tgz'
+          if-no-files-found: error
